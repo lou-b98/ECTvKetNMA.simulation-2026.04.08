@@ -1,0 +1,313 @@
+---
+title: "ECTvKet NMA 2026.04.16"
+format: html
+editor: visual
+knitr:
+  opts_knit:
+    root.dir: "C:/Users/z3540607/OneDrive - UNSW/Documents/03. Studies/TBD - ket-v-ECT NMA/analysis/ECTvKetNMA.simulation 2026.04.08
+---
+
+# Simulating data for Ket v ECT IPD
+
+
+Studies included:
+
+-   Ekstrand 2022 - KetECT study
+-   Fedgchin 2019 - esketamine study
+-   Loo 2015 - RUL pulse width study
+-   Loo 2023 - KADS data
+-   Ochs-Ross 2020
+-   Popova 2019
+-   Takahashi 2021
+-   Chen 2023
+-   Fu 2020
+-   Ionescu 2021
+-   Martin 2020 - BL pulse width study \<- decided to exclude this because of small numbers
+-   TREK (simulated parameters)
+
+Second step:
+
+-   simulate TREK data
+    -   anchor week 4 to EOT
+    -   kads + 2 mean and use same SDs - esketamine should be same at baseline
+        -   how much higher the means are in esketamine is SD x effect size / divide by each week
+    -   0.6 difference between the two arms -esketamine higher scores (worse)
+-   need: Shiroma means and SDs
+
+## Set up
+
+### Packages
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(MASS)
+library(readxl)
+```
+
+### Get data
+
+```{r}
+library(readxl)
+dat <- read_excel("data/ECTvKet-NMA.simdata2026.04.16.xlsx")
+```
+
+```{r}
+getwd()
+```
+
+```{r}
+str(dat)
+
+```
+
+```{r}
+str(dat)
+
+```
+
+convert grouping vars into factors
+
+```{r}
+dat <- dat %>%
+  mutate(across(c(study, modality, treatment), as.factor))
+str(dat)
+```
+
+Question for the future - should year be treated numberically/as integer?
+
+# Create Function
+
+Set up correlation matrices:
+
+Exchangeable - fixed correlation between all timepoints for an individual (user provides rho)
+
+```{r}
+make_exchangeable_cor <- function(k, rho) {
+  R <- matrix(rho, nrow = k, ncol = k)
+  diag(R) <- 1
+  R
+}
+
+```
+
+Ar(1) - ar1 style correlation matrix where timepoints closer together are more closely correlated
+
+```{r}
+make_ar1_cor_week <- function(week, rho) {
+  outer(week, week, function(i, j) rho^abs(i - j))
+} #week is var used to order timepoints
+```
+
+```{r}
+simulate_longitudinal <- function(df_group,
+                                              rho = 0.5,
+                                              cor_structure = c("exchangeable", "ar1")) {
+  cor_structure <- match.arg(cor_structure)
+
+  if (!is.numeric(rho) || length(rho) != 1 || !is.finite(rho) || abs(rho) >= 1) {
+    stop("rho must be a single finite number with abs(rho) < 1")
+  }
+
+  df_group <- df_group %>%
+    dplyr::mutate(
+      cont.n = as.numeric(cont.n),
+      cont.mean = as.numeric(cont.mean),
+      cont.sd = as.numeric(cont.sd),
+      week = as.numeric(week)
+    ) %>%
+    dplyr::filter(
+      !is.na(timepoint),
+      !is.na(week),
+      !is.na(cont.n),
+      cont.n > 0,
+      !is.na(cont.mean),
+      !is.na(cont.sd)
+    ) %>%
+    dplyr::arrange(week)
+
+  k <- nrow(df_group)
+
+  if (k == 0) {
+    return(tibble::tibble(
+      timepoint = character(),
+      week = numeric(),
+      participant_id = integer(),
+      y = numeric()
+    ))
+  }
+
+  n_baseline <- as.integer(df_group$cont.n[1])
+
+  if (!is.finite(n_baseline) || n_baseline <= 0) {
+    return(tibble::tibble(
+      timepoint = character(),
+      week = numeric(),
+      participant_id = integer(),
+      y = numeric()
+    ))
+  }
+
+  R <- switch(
+    cor_structure,
+    exchangeable = make_exchangeable_cor(k, rho),
+    ar1 = make_ar1_cor_week(df_group$week, rho)
+  )
+
+  Z <- MASS::mvrnorm(
+    n = n_baseline,
+    mu = rep(0, k),
+    Sigma = R
+  )
+
+  Y <- matrix(NA_real_, nrow = n_baseline, ncol = k)
+
+  for (j in seq_len(k)) {
+    target_mean <- df_group$cont.mean[j]
+    target_sd   <- df_group$cont.sd[j]
+
+    if (!is.finite(target_mean) || !is.finite(target_sd)) {
+      Y[, j] <- NA_real_
+    } else if (target_sd == 0) {
+      Y[, j] <- target_mean
+    } else {
+      z <- Z[, j]
+      z <- (z - mean(z)) / stats::sd(z)
+      Y[, j] <- target_mean + target_sd * z
+    }
+  }
+
+  out <- tibble::as_tibble(Y)
+  names(out) <- paste0("t", seq_len(k))
+
+  out <- out %>%
+    dplyr::mutate(participant_id = seq_len(n_baseline)) %>%
+    tidyr::pivot_longer(
+      cols = tidyselect::starts_with("t"),
+      names_to = "time_index",
+      values_to = "y"
+    ) %>%
+    dplyr::mutate(time_index = as.integer(sub("t", "", time_index))) %>%
+    dplyr::transmute(
+      timepoint = df_group$timepoint[time_index],
+      week = df_group$week[time_index],
+      participant_id = participant_id,
+      y = y
+    )
+
+  out
+}
+
+simulate_longitudinal_dataset <- function(dat,
+                                                rho = 0.5,
+                                                cor_structure = c("exchangeable", "ar1")) {
+  cor_structure <- match.arg(cor_structure)
+
+  dat %>%
+    dplyr::group_by(study, modality, treatment, arm.name, scale) %>%
+    dplyr::group_modify(~simulate_longitudinal(
+      df_group = .x,
+      rho = rho,
+      cor_structure = cor_structure
+    )) %>%
+    dplyr::ungroup()
+}
+```
+
+# Run function
+
+```{R}
+sim_data <- simulate_longitudinal_dataset(
+  dat,
+  rho = 0.8,
+  cor_structure = "ar1"
+)
+```
+
+check output
+
+```{r}
+dplyr::glimpse(sim_data)
+```
+
+n's for all timepoints should reflect baseline ns
+
+```{r}
+sim_data %>%
+  dplyr::count(study, arm.name, timepoint)
+```
+
+```{r}
+sim_data %>%
+  dplyr::select(study, arm.name, timepoint, week, participant_id, y) %>%
+  dplyr::arrange(study, arm.name, participant_id, week)
+```
+
+create nested df grouped by study
+
+```{r}
+#tidyverse method
+study_nested <- sim_data %>%   
+  dplyr::group_by(study) %>%   
+  tidyr::nest()
+```
+
+```{r}
+#base R
+study_list <- split(sim_data, sim_data$study)
+```
+
+# Checking Output
+
+Checking how simulated means/SDs compare to provided dat df
+
+```{r}
+#reloading because MASS packages interferes
+library(dplyr)
+library(tidyr)
+
+check_data <- sim_data %>%
+  dplyr::group_by(study, modality, scale, timepoint) %>%
+  dplyr::summarise(
+    sim_n = sum(!is.na(y)),
+    sim_mean = mean(y, na.rm = TRUE),
+    sim_sd = stats::sd(y, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(
+    dat,
+    by = c("study", "modality", "scale", "timepoint")
+  )
+
+check_data
+
+```
+
+```{r}
+wide_dat <- sim_data %>%
+  tidyr::pivot_wider(
+    id_cols = c(study, modality, treatment, arm.name, scale, participant_id),
+    names_from = week,
+    values_from = y
+  ) %>% {
+    # identify week columns
+    week_cols <- setdiff(names(.), c("study", "modality", "treatment", "arm.name", "scale", "participant_id"))
+    
+    # sort them numerically
+    week_cols_sorted <- sort(as.numeric(week_cols))
+    
+    # reselect in correct order
+    dplyr::select(., study, modality, treatment, arm.name, scale, participant_id,
+                  all_of(as.character(week_cols_sorted)))
+  }
+  
+```
+
+```{r}
+cor_matrix <- wide_dat %>%
+  dplyr::select(-study, -modality, -treatment, -arm.name, -scale, -participant_id) %>%
+  cor(use = "pairwise.complete.obs")
+
+cor_matrix
+```

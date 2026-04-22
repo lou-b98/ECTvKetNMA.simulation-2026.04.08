@@ -1,0 +1,375 @@
+---
+title: "Ketamine MRFF"
+author: "Nikolin"
+date: "22/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MRFF Study
+
+## 1 Design
+
+The primary outcome will be the MADRS score, a 10-item Likert scale with total scores ranging from 0 to 60. The endpoint is 4-weeks post-randomisation. There will be 2 treatment arms: Subcutaneous Racemic Ketamine, and Intranasal Spravato Esketamine. The comparison will be baseline-adjusted MADRS scores at 28 days after randomisation.
+
+Of interest are:
+
+-   showing that racemic ketamine is superior to esketamine
+-   showing that racemic ketamine is non-inferior
+-   showed equivence between racemic ketamine and esketamine
+
+## 2 Outcome
+
+The MADRS will be treated as a continuous outcome. A lower score indicates better outcomes. The KADS Cohort 2 group showed a reduction of 8 at the primary end-point (4-weeks) from a baseline of 30. Pooling largest esketamine trials (Ionescu et al., 2021; Fedgchin et al., 2019; Fu et al., 2020; Popova et al., 2019) showed a mean reduction of 24 at the primary end-point (3-4 weeks) from a baseline of 39.
+
+For the present study, the mean value of the MADRS at baseline is expected to be 30, in line with KADS data from both cohorts and conditions. Given participants will be aware that they are receiving an active intervention (i.e., no placebo arm), we hypothesise a decrease in MADRS scores of 16 in the Subcutaneous Racemic Ketamine and group, approximately double that of the KADS cohort 2 improvement, and an SD of 12 in MADRS scores across groups.
+
+## 3 Network Meta-Analysis
+
+To estimate the indirect comparison of racemic ketamine vs esketamine, use a Bayesian network meta-analysis of 13 RCTs of repeated sessions of ketamine for the treatment of depression., with 1808 participants in 32 experiment arms.
+
+The models predict a standardised mean difference (SMD) of 0.63 (95% CrI: -0.03, 1.31), which equates to a MADRS score difference of 5.65 (95% CrI: 1.63, 11.60) in favour of racemic ketamine.
+
+```{r nma.section, echo=FALSE, results=FALSE}
+library(esc)
+library(gemtc)
+library(multinma)
+library(ggplot2)
+library(stringr)
+library(rjags)
+
+# set labels
+NEG_LABEL = "Favours intervention"
+POS_LABEL = "Favours placebo"
+
+# set file names
+SMD.DATA <- 'C:\\Users\\Admin\\OneDrive - UNSW\\Studies\\Ketamine\\TBD - Ketamine TREK\\data\\df_smd.csv'
+
+RAW.DATA <- 'C:\\Users\\Admin\\OneDrive - UNSW\\Studies\\Ketamine\\TBD - Ketamine TREK\\data\\df_raw.csv'
+
+# load the data from a csv file
+df_smd <- read.csv(SMD.DATA, header=TRUE)
+df_raw <- read.csv(RAW.DATA, header=TRUE)
+
+# plot a network based on a contrast-based effect size data frame
+plot_network_with_multinma <- function(df, title){
+  
+  # create a multinma network object
+  network = set_agd_contrast(df,
+                             study = study,
+                             trt = treatment,
+                             y = diff,
+                             se = std.err,
+                             sample_size = n)
+  
+  # plot network; for style options see:
+  # https://dmphillippo.github.io/multinma/reference/plot.nma_data.html
+  plot(network, weight_edges=TRUE, weight_nodes=TRUE) +
+    ggplot2::theme(legend.position = "bottom",
+                   legend.box = "vertical",
+                   legend.margin = ggplot2::margin(0,0,0,0),
+                   legend.spacing = ggplot2::unit(0.5, "lines")) +
+    ggplot2::ggtitle(title)
+}
+
+# plot the network diagram
+plot_network_with_multinma(df_smd, "Antidepressant efficacy")
+plot_network_with_multinma(df_raw, "Antidepressant efficacy")
+
+# create a gemtc network object from the .csv data
+smd.network = mtc.network(data.re = df_smd,
+                          description = "Bayesian NMA data - SMD")
+raw.network = mtc.network(data.re = df_raw,
+                          description = "Bayesian NMA data - raw")
+
+# create a random effects, normal likelihood, identity link model
+smd.model = mtc.model(smd.network,
+                      likelihood = "normal",
+                      link = "identity",
+                      linearModel = 'random')
+raw.model = mtc.model(raw.network,
+                      likelihood = "normal",
+                      link = "identity",
+                      linearModel = 'random')
+
+# run MCMC - burn-in 50,000, iterations 100,000, thin 20
+smd.mcmc1 = mtc.run(smd.model,
+               n.adapt=50000,
+               n.iter=100000,
+               thin=20)
+raw.mcmc1 = mtc.run(raw.model,
+               n.adapt=50000,
+               n.iter=100000,
+               thin=20)
+
+# forest plots relative to high-dose racemic ketamine
+forest(relative.effect(smd.mcmc1, t1="Ket_High"), 
+       digits=3,
+       draw.no.effect=TRUE,
+       right.label=POS_LABEL,
+       left.label=NEG_LABEL,
+       use.description=TRUE)
+
+forest(relative.effect(raw.mcmc1, t1="Ket_High"), 
+       digits=3,
+       draw.no.effect=TRUE,
+       right.label=POS_LABEL,
+       left.label=NEG_LABEL,
+       use.description=TRUE)
+
+# SMD of MADRS only studies Ket_High vs Esket_High is 0.62
+# MADRS_diff of MADRS only studies is 5.61
+# Therefore, the SMD is 5.61/0.62 = 9.05
+
+```
+
+## 4 Approximate Fixed Sample Size
+
+Assuming the following:
+
+-   two-sided independent samples t-test
+-   comparative effect size from NMA analysis, d = 0.63
+-   $\alpha$ = 0.05
+-   1 - $\beta$ = 95%
+
+```{r simple.power.analysis, echo=FALSE}
+library(pwr)
+p.out <- pwr.t.test(d = 0.63, 
+                    power = 0.90, 
+                    sig.level = 0.05, 
+                    type="two.sample")
+plot(p.out)
+
+```
+
+
+## 5 Non-inferiority
+
+Non-inferiority analyses using difference > -4
+
+```{r simple.noninferiority.analysis, echo=FALSE}
+library(TOSTER) 
+
+# worst case scenario - no difference, large SD from ket C2 KADS
+power_t_TOST(
+  #n = 66,
+  delta = 3,
+  sd = 10,
+  low_eqbound = -3,
+  high_eqbound = Inf,
+  alpha = 0.025,
+  power = 0.90,
+  type = "two.sample"
+)
+
+# 63 per group for 15%
+# 67 per group for 10%
+
+# or 
+
+
+# NMA otucomes 
+#   delta = 5.65
+#   sd = 3.375
+#   alpha = 0.025
+#   power = 0.95
+# Non-inf at -4.40 gives 80% power with n = 67
+# Non-inf at -4.19 gives 80% power with n = 74 (added 10% from dropout margin)
+
+# non-inf power, assuming 67 or 71 per group
+ES = 0.63
+ES = 0.3
+
+power_t_TOST(
+  n = NULL,
+  delta = 0,
+  sd = 10,
+  low_eqbound = -4,
+  high_eqbound = Inf,
+  alpha = 0.025,
+  power = 0.90,
+  type = "two.sample"
+)
+
+```
+
+
+## 6 Bayesian Modelling - Informative Priors
+
+Permutations change the seed by one for each permutation produce a random distribution of 120 participants shift the full distribution by the 95% credible interval range (-2:12) subsample out of the full distribution (n.subset = 50:10:120)
+
+```{r bayesian.model, echo=FALSE}
+library(truncnorm)
+library(brms) 
+
+#library(tidyverse)  suppressWarnings(library(tidyverse))
+library(ggridges) 
+library(shinystan) 
+library(bayesplot) 
+library(tidybayes) 
+library(ggmcmc)
+
+# parameters
+PERMUTATIONS <- 200
+SAMPLE.RANGE <- seq(from = 60, to = 120, by = 10)
+EFFECT.RANGE <- seq(from = -2, to = 12, by = 2)
+
+# empty data frames
+columns = c("madrs", "group", "treatment")
+ket.data = data.frame(matrix(nrow=0, ncol =length(columns)))
+esket.data = data.frame(matrix(nrow=0, ncol =length(columns)))
+
+ket.data <- data.frame(madrs = numeric(),
+                 group = factor(),
+                 treatment = factor(),
+                 stringsAsFactors = FALSE)
+
+colnames(ket.data) = columns
+colnames(esket.data) = columns
+
+# assumed values based on largest trials
+max.n <- 120
+madrs.change.min <- -40
+madrs.change.max <- 15
+madrs.change.mean <- -16
+madrs.change.sd <- 12.4
+
+# set model priors
+modelpriors1 = c(set_prior("normal(5.65,3.3075)", class = "b", coef = "groupesketamine"),
+                 set_prior("normal(0,12.4)", class = "sigma"))
+
+for (perm in 1:PERMUTATIONS) {
+  for (madrs.diff in EFFECT.RANGE) {
+    
+    # ketamine distribution
+    set.seed(perm)
+    ket.distribution <- round(rtruncnorm(max.n,
+                                         a = madrs.change.min,
+                                         b = madrs.change.max,
+                                         mean = madrs.change.mean,
+                                         sd = madrs.change.sd))
+    
+    # esketamine distribution
+    set.seed(PERMUTATIONS + perm)
+    esket.distribution <- round(rtruncnorm(max.n,
+                                         a = madrs.change.min,
+                                         b = madrs.change.max,
+                                         mean = madrs.change.mean + madrs.diff,
+                                         sd = madrs.change.sd))
+    
+    for (samp in SAMPLE.RANGE) {
+      
+      # select subsets of the data above
+      ket.subset <- sample(ket.distribution,samp) 
+      esket.subset <- sample(esket.distribution,samp) 
+      
+      # create data frames for analysis
+      ket.data <- data.frame(madrs = ket.subset,
+                             group = factor(rep("ketamine",length(ket.subset))),
+                             treatment = rep(0,length(ket.subset)))
+      
+      esket.data <- data.frame(madrs = esket.subset,
+                             group = factor(rep("esketamine",length(esket.subset))),
+                             treatment = rep(1,length(esket.subset)))
+      
+      # bind the data frames together
+      pseudo.data <- rbind(ket.data, esket.data)
+
+      
+      # << COULD ADD IF STATEMENT TO UPDATE MODEL WITH LARGER SAMPLE >>
+      
+      if (samp > SAMPLE.RANGE[1]){
+        
+        # update model fit to save time
+        updated.fit.model <- update(fit.model, 
+                              newdata = pseudo.data, 
+                              seed = perm*samp*(madrs.diff+abs(min(EFFECT.RANGE))+1)) 
+        
+        #   extract answers from research question hypotheses
+        hyp.noninf <- hypothesis(updated.fit.model, "groupesketamine > -4")
+        bayes.factor.noninf <- hyp.noninf$hypothesis$Evid.Ratio
+        
+        hyp.super <- hypothesis(updated.fit.model, "groupesketamine > 0")
+        bayes.factor.super <- hyp.super$hypothesis$Evid.Ratio
+
+      } else {
+        
+        # run bayesian fit - NEED TO SOLVE THE ISSUE OF INFORMATIVE PRIORS
+        fit.model <- brm(madrs ~ 0 + Intercept + group,
+                         family = gaussian(),
+                         prior = modelpriors1,
+                         seed = perm,
+                         iter = 2000,
+                         chains = 4,
+                         warmup = 1000,
+                         control = list(adapt_delta = 0.99),
+                         data = pseudo.data)
+        
+        #   extract answers from research question hypotheses
+        hyp.noninf <- hypothesis(fit.model, "groupesketamine > -4")
+        bayes.factor.noninf <- hyp.noninf$hypothesis$Evid.Ratio
+        
+        hyp.super <- hypothesis(fit.model, "groupesketamine > 0")
+        bayes.factor.super <- hyp.super$hypothesis$Evid.Ratio
+        
+      }
+
+      
+      # NOT NEEDED
+      # outcomes of the model
+      plot(fit.model) 
+      print(fit.model) 
+      fixef(fit.model)
+
+      # extract bayes factor for comparison
+      posterior_summary(fit.model)
+      
+      # store data
+      #   the groupesketamine difference
+      #   the bayesfactor for calculating
+      
+    }
+  }
+}
+  
+
+```
+
+List of web-pages to look at:
+
+<https://discourse.mc-stan.org/t/help-understanding-and-setting-informative-priors-in-brms/9574>
+
+<https://rmarkdown.rstudio.com/articles_intro.html>
+
+<https://rmarkdown.rstudio.com/authoring_basics.html>
+
+<https://www.rstudio.com/wp-content/uploads/2015/02/rmarkdown-cheatsheet.pdf>
+
+<https://www.rstudio.com/blog/rstudio-v1-4-preview-visual-markdown-editing/>
+
+<https://rpruim.github.io/s341/S19/from-class/MathinRmd.html>
+
+<https://solomonkurz.netlify.app/post/bayesian-power-analysis-part-i/>
+
+<https://marissabarlaz.github.io/portfolio/bayesian/#how-to-set-priors-in-brms>
+
+<https://www.r-bloggers.com/2014/02/bayes-factor-t-tests-part-2-two-sample-tests/>
+
+<https://www.r-bloggers.com/2019/05/bayesian-models-in-r-2/>
+
+<file:///C:/Users/Admin/AppData/Local/Microsoft/Windows/INetCache/Content.Outlook/I4AXIAHQ/Sequential-Design.html>
+
+<file:///C:/Users/Admin/AppData/Local/Microsoft/Windows/INetCache/Content.Outlook/I4AXIAHQ/20210701_design_notes.html>
+
+<https://clayford.github.io/dwir/dwr_12_generating_data.html>
+
+<https://stats.stackexchange.com/questions/30303/how-to-simulate-data-that-satisfy-specific-constraints-such-as-having-specific-m>
+
+<https://stackoverflow.com/questions/32792824/create-a-fake-dataset-that-fits-the-following-parameters-n-mean-sd-min-and>
+
+<https://bmcpsychiatry.biomedcentral.com/articles/10.1186/s12888-018-1761-4>
+
+<https://cran.r-project.org/web/packages/pwr/vignettes/pwr-vignette.html>

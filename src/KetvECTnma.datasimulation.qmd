@@ -1,0 +1,360 @@
+---
+title: "ECTvKet NMA 2026.04.16"
+format: html
+editor: visual
+---
+
+# Simulating data for Ket v ECT IPD
+
+Studies included:
+
+-   Ekstrand 2022 - KetECT study
+-   Fedgchin 2019 - esketamine study
+-   Loo 2015 - RUL pulse width study
+-   Loo 2023 - KADS data
+-   Martin 2020 - BL pulse width study \<- decided to exclude this because of small numbers
+
+Second step:
+
+-   simulate TREK data
+    -   anchor week 4 to EOT
+    -   kads + 2 mean and use same SDs - esketamine should be same at baseline
+        -   how much higher the means are in esketamine is SD x effect size / divide by each week
+    -   0.6 difference between the two arms -esketamine higher scores (worse)
+-   need: Shiroma means and SDs
+
+## Set up
+
+### Packages
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(MASS)
+library(readxl)
+```
+
+### Get data
+
+```{r}
+dat <- read_excel("data/ECTvKet-NMA.simdata2026.04.16.xlsx")
+```
+
+```{r}
+str(dat)
+```
+
+sd is character - fix this (note. this is now built into the sim_data function, no need to run)
+
+```{r}
+dat <- dat %>%
+  mutate(
+    cont.sd = as.numeric(cont.sd),
+    across(c(study, modality, treatment), as.factor))
+str(dat)
+```
+
+# Create a function to simulate data
+
+2 ways of thinking about time - discrete and growth curves (days)
+
+## Correlation matrices
+
+matrix where all sets of timepoints have the same correlation
+
+```{r}
+make_exchangeable_cor <- function(k, rho) {
+  R <- matrix(rho, nrow = k, ncol = k)
+  diag(R) <- 1
+  R
+}
+```
+
+matrix nearby timepoints are more correlated - note. to use this would need to order the timepoints var sequentially (currently inconsistent)
+
+```{r}
+make_ar1_cor <- function(k, rho) {
+  outer(seq_len(k), seq_len(k), function(i, j) rho^abs(i - j))
+}
+```
+
+## Function
+
+```{r}
+simulate_longitudinal_group_exact <- function(df_group, #dataset assuming on row per arm and timepoint
+                                              rho = 0.5,
+                                              cor_structure = c("exchangeable", "ar1")) {
+  cor_structure <- match.arg(cor_structure) #ensures that cor_structure is one of the allowed values
+  #clean and prepares the input data
+  df_group <- df_group %>% 
+    dplyr::mutate(
+      cont.n = as.numeric(cont.n),
+      cont.mean = as.numeric(cont.mean),
+      cont.sd = as.numeric(cont.sd)
+    ) %>%
+    #remove bad rows
+    dplyr::filter( 
+      !is.na(timepoint),
+      !is.na(cont.n),
+      cont.n > 0,
+      !is.na(cont.mean),
+      !is.na(cont.sd)
+    ) %>%
+    dplyr::arrange(timepoint)
+
+  k <- nrow(df_group) #counts number of timepoints
+#returns empty output if no rows remain after filtering bad rows
+  if (k == 0) {
+    return(tibble::tibble(
+      timepoint = character(),
+      participant_id = integer(),
+      y = numeric()
+    )) 
+  }
+#for a given study/arm, takes the max sample size across all timepoints because function simulates a full set of participants first, then introduces missingness at later timepoints)
+  n_max <- max(df_group$cont.n) 
+#safety check for where nmax is invalid
+  if (!is.finite(n_max) || n_max <= 0) {
+    return(tibble::tibble(
+      timepoint = character(),
+      participant_id = integer(),
+      y = numeric()
+    ))
+  } 
+
+  n_max <- as.integer(n_max)
+#builds correlation matrix
+  R <- switch(
+    cor_structure,
+    exchangeable = make_exchangeable_cor(k, rho),
+    ar1 = make_ar1_cor(k, rho)
+  ) 
+#Simulate correlated standard normal data
+  Z <- MASS::mvrnorm(n = n_max, mu = rep(0, k), Sigma = R) # z = a matric of n_max x k(timepoints)
+  Y <- Z
+#missingness matrix
+  missing_mat <- matrix(FALSE, nrow = n_max, ncol = k)
+
+  for (j in seq_len(k)) {
+    n_obs <- as.integer(df_group$cont.n[j]) #get n for each timepoint
+#randomly select subjects to be missing
+    if (!is.na(n_obs) && n_obs < n_max) {
+      miss_idx <- sample(seq_len(n_max), size = n_max - n_obs, replace = FALSE)
+      missing_mat[miss_idx, j] <- TRUE
+    }
+  }
+#rescale timepoint to match target mean and SD
+  for (j in seq_len(k)) {
+    target_mean <- df_group$cont.mean[j]
+    target_sd   <- df_group$cont.sd[j]
+    obs_idx <- which(!missing_mat[, j])
+
+    if (length(obs_idx) == 0 || !is.finite(target_mean) || !is.finite(target_sd)) {
+      Y[, j] <- NA_real_
+    } else if (length(obs_idx) == 1 || target_sd == 0) {
+      Y[, j] <- NA_real_
+      Y[obs_idx, j] <- target_mean
+    } else {
+      z <- Z[obs_idx, j]
+      z <- (z - mean(z)) / stats::sd(z)
+      y_obs <- target_mean + target_sd * z
+
+      Y[, j] <- NA_real_
+      Y[obs_idx, j] <- y_obs
+    }
+  }
+#convert simulated matrix to a tibble
+  out <- tibble::as_tibble(Y)
+  names(out) <- paste0("t", seq_len(k))
+#reshape and add labels
+  out <- out %>%
+    dplyr::mutate(participant_id = seq_len(n_max)) %>%
+    tidyr::pivot_longer(
+      cols = tidyselect::starts_with("t"),
+      names_to = "time_index",
+      values_to = "y"
+    ) %>%
+    dplyr::mutate(time_index = as.integer(sub("t", "", time_index))) %>%
+    dplyr::left_join(
+      df_group %>% dplyr::mutate(time_index = seq_len(dplyr::n())),
+      by = "time_index"
+    )
+
+  out[, c("timepoint", "participant_id", "y")]
+}
+```
+
+## Wrapper
+
+```{r}
+simulate_longitudinal_dataset_exact <- function(dat, rho = 0.5,
+                                                cor_structure = c("exchangeable", "ar1")) {
+  cor_structure <- match.arg(cor_structure)
+
+  dat %>%
+    dplyr::group_by(study, modality, treatment, arm.name, scale) %>%
+    dplyr::group_modify(~simulate_longitudinal_group_exact(
+      df_group = .x,
+      rho = rho,
+      cor_structure = cor_structure
+    )) %>%
+    dplyr::ungroup()
+}
+```
+
+## Run function
+
+```{r}
+set.seed(123)
+sim_long <- simulate_longitudinal_dataset_exact(dat, rho = 0.5)
+str(sim_long)
+```
+
+## Checking output
+
+```{r}
+check_long <- sim_long %>%
+  dplyr::group_by(study, modality, scale, timepoint) %>%
+  dplyr::summarise(
+    sim_n = sum(!is.na(y)),
+    sim_mean = mean(y, na.rm = TRUE),
+    sim_sd = stats::sd(y, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(
+    dat,
+    by = c("study", "modality", "scale", "timepoint")
+  )
+
+check_long
+```
+
+# Simulating TREK data
+
+Based on steves work: TREK.sample.simulations.r
+
+## set parameters
+
+```{r}
+MEAN.DIFF <- 0
+VAR <- 10
+MEAN.KET <- 10
+MEAN.ESKET <- 13
+
+PRIOR.MU <- 5.64
+PRIOR.SEM <- 6.6
+```
+
+## get data
+
+```{r}
+cov.data <- read_excel("data/KADS.bookend.xlsx")
+```
+
+```{r}
+cov.data <- as.data.frame(cov.data)
+cov.data <- cov.data[complete.cases(cov.data$MADRS_Total_ENDRCT), ]
+cov(cov.data[,4:5])
+```
+
+```{r}
+N <- 150
+BASE.SD <- 6.5
+END.SD <- 10
+```
+
+```{r}
+
+matrix_data <- c(BASE.SD^2, (BASE.SD*END.SD)/2, 
+                 (BASE.SD*END.SD)/2, END.SD^2)
+cv_mat <- matrix(data = matrix_data, nrow = 2, ncol = 2, byrow = TRUE)
+rownames(cv_mat) <- c("base","end")
+colnames(cv_mat) <- c("base","end")
+```
+
+```{r}
+#racemic
+mns_1 <- c(32, 32 - 16) 
+sim_data_rac <- round(mvrnorm(n = N, mu = mns_1, Sigma = cv_mat)); 
+colnames(sim_data_rac) <- c("Baseline", "EndRCT"); 
+subject <- 1:N 
+cond <- rep(x = "racemic", times = N) 
+sp_1 <- data.frame(subject, cond, sim_data_rac);
+# ESKET
+mns_2 <- c(32, 32 - 14)
+sim_data_esk  <- round(mvrnorm(n = N, mu = mns_2, Sigma = cv_mat));
+colnames(sim_data_esk) <- c("Baseline", "EndRCT");
+subject <- 1:N
+cond<- rep(x = "esketamine", times = N)
+sp_2<- data.frame(subject, cond, sim_data_esk);
+
+# Bind together into complete dataset
+trek.sim <- rbind(sp_1, sp_2);
+trek.sim$cond <- as.factor(trek.sim$cond)
+str(trek.sim)
+```
+
+# Combining datasets
+
+## Reshape simulated trek data
+
+```{r}
+trek_long <- trek.sim %>%
+  rename( #to match sim_long data set
+    participant_id = subject,
+    modality = cond
+  ) %>%
+  pivot_longer(
+    cols = c(Baseline, EndRCT),
+    names_to = "timepoint",
+    values_to = "y"
+  ) %>%
+  mutate( #to match sim_long data
+    timepoint = recode(timepoint,
+      Baseline = "pre",
+      EndRCT = "EOT"
+    ),
+    study = "TREK",
+    scale = "MADRS",
+    treatment = modality,
+    arm.name = modality
+  ) 
+```
+
+## Make full dataset
+
+```{r}
+sim_long.all <- bind_rows(trek_long, sim_long)
+```
+
+```{r}
+sim_long.all <- sim_long.all %>%
+  dplyr::select(study, 
+         modality, 
+         treatment, 
+         arm.name, 
+         scale, 
+         timepoint, 
+         participant_id, 
+         y)
+```
+
+```{r}
+#tidyverse method
+study_nested <- sim_long.all %>%   
+  dplyr::group_by(study) %>%   
+  tidyr::nest()
+```
+
+```{r}
+#base R
+study_list <- split(sim_long.all, sim_long.all$study)
+```
+
+```{r}
+library(writexl)
+write_xlsx(sim_long.all, "eknma.simdata.output.xlsx")
+```
+
+# Take 2
