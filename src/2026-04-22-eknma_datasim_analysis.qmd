@@ -4,7 +4,7 @@ format: html
 editor: visual
 ---
 
-## Analysis
+# ECT v Ket NMA data simulation - Analysis and Plots
 
 Using data simulated from aggregate values to conduct analysis
 
@@ -27,3 +27,71 @@ simdat <- simdat %>%
   mutate(across(c(study, modality, treatment), as.factor))
 str(simdat)
 ```
+I want to simplify the treatment variable (e.g. remove dose details)
+```{r}
+library(stringr)
+
+simdat <- simdat %>%
+  mutate(
+    dose = str_extract(treatment, "\\d+\\s*mg"),
+    treatment = str_trim(str_remove(treatment, "[-\\s]*\\d+\\s*mg"))
+  )
+
+#for placbo, treatment should be either saline or midazolam
+simdat <- simdat %>%
+  mutate(treatment = if_else(treatment == "placebo", "saline", treatment), #if treatment = placebo change to saline, otherwhise keep original values 
+         treatment = if_else(treatment == "ketamine", "racemic", treatment),
+         treatment = as.factor(treatment))
+#check levels
+levels(simdat$treatment)
+
+```
+
+```{r}
+arm_summary <- simdat %>%
+  group_by(study, modality, treatment, arm.name, timepoint, week) %>%   
+  summarise(
+    n = n(),
+    mean = mean(y, na.rm = TRUE),
+    sd = sd(y, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+# Plot
+
+```{r}
+library(ggplot2)
+```
+
+```{r}
+ggplot(data = arm_summary, aes(x = week, y = mean)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_point(aes(colour = study),
+             stroke = 1.5,
+             size = 3) +
+  geom_line(aes(colour = study), size = 1) + 
+  geom_errorbar(aes(ymin = mean - (sd/sqrt(n)), 
+                    ymax = mean + (sd/sqrt(n)), 
+                    colour = study), 
+                size = 1,
+                width = 0.1)
+```
+```{r}
+ggplot(arm_summary, 
+       aes(x = week,
+           y = mean,
+           group = interaction(study, treatment))) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(x = "Timepoint", y = "Mean outcome") +
+  theme_minimal()
+```
+```{r}
+library(esc)
+library(gemtc)
+library(multinma)
+library(stringr)
+library(rjags)
+```
+
