@@ -2,13 +2,9 @@
 title: "ECTvKet NMA 2026.04.16"
 format: html
 editor: visual
-knitr:
-  opts_knit:
-    root.dir: "C:/Users/z3540607/OneDrive - UNSW/Documents/03. Studies/TBD - ket-v-ECT NMA/analysis/ECTvKetNMA.simulation 2026.04.08
 ---
 
 # Simulating data for Ket v ECT IPD
-
 
 Studies included:
 
@@ -49,17 +45,7 @@ library(readxl)
 ### Get data
 
 ```{r}
-library(readxl)
-dat <- read_excel("data/ECTvKet-NMA.simdata2026.04.16.xlsx")
-```
-
-```{r}
-getwd()
-```
-
-```{r}
-str(dat)
-
+dat <- read_excel("data/raw/2026-04-16-ECTvKet_NMA_sim_data.xlsx")
 ```
 
 ```{r}
@@ -75,9 +61,9 @@ dat <- dat %>%
 str(dat)
 ```
 
-Question for the future - should year be treated numberically/as integer?
+Question for the future - should year be treated numerically/as integer?
 
-# Create Function
+## Create Function
 
 Set up correlation matrices:
 
@@ -215,10 +201,11 @@ simulate_longitudinal_dataset <- function(dat,
 }
 ```
 
-# Run function
+## Run function
 
 ```{R}
-sim_data <- simulate_longitudinal_dataset(
+#rho set as 0.8
+sim_data1 <- simulate_longitudinal_dataset(
   dat,
   rho = 0.8,
   cor_structure = "ar1"
@@ -228,37 +215,31 @@ sim_data <- simulate_longitudinal_dataset(
 check output
 
 ```{r}
-dplyr::glimpse(sim_data)
+dplyr::glimpse(sim_data1)
 ```
 
 n's for all timepoints should reflect baseline ns
 
 ```{r}
-sim_data %>%
+sim_data1 %>%
   dplyr::count(study, arm.name, timepoint)
-```
-
-```{r}
-sim_data %>%
-  dplyr::select(study, arm.name, timepoint, week, participant_id, y) %>%
-  dplyr::arrange(study, arm.name, participant_id, week)
 ```
 
 create nested df grouped by study
 
 ```{r}
 #tidyverse method
-study_nested <- sim_data %>%   
+study_nested1 <- sim_data1 %>%   
   dplyr::group_by(study) %>%   
   tidyr::nest()
 ```
 
 ```{r}
 #base R
-study_list <- split(sim_data, sim_data$study)
+study_list1 <- split(sim_data1, sim_data1$study)
 ```
 
-# Checking Output
+## Checking Output
 
 Checking how simulated means/SDs compare to provided dat df
 
@@ -267,7 +248,7 @@ Checking how simulated means/SDs compare to provided dat df
 library(dplyr)
 library(tidyr)
 
-check_data <- sim_data %>%
+check_data <- sim_data1 %>%
   dplyr::group_by(study, modality, scale, timepoint) %>%
   dplyr::summarise(
     sim_n = sum(!is.na(y)),
@@ -285,7 +266,7 @@ check_data
 ```
 
 ```{r}
-wide_dat <- sim_data %>%
+wide_dat1 <- sim_data1 %>%
   tidyr::pivot_wider(
     id_cols = c(study, modality, treatment, arm.name, scale, participant_id),
     names_from = week,
@@ -305,9 +286,52 @@ wide_dat <- sim_data %>%
 ```
 
 ```{r}
-cor_matrix <- wide_dat %>%
+#check correlation matrix
+wide_dat1 %>%
   dplyr::select(-study, -modality, -treatment, -arm.name, -scale, -participant_id) %>%
   cor(use = "pairwise.complete.obs")
 
-cor_matrix
+```
+
+Correlation betwen timepoint 4 and 0 = 0.264 i.e. quite low. Lets increase rho
+
+```{r}
+#rho set as 0.90
+sim_data2 <- simulate_longitudinal_dataset(
+  dat,
+  rho = 0.90,
+  cor_structure = "ar1"
+)
+```
+
+```{r}
+wide_dat2 <- sim_data2 %>%
+  tidyr::pivot_wider(
+    id_cols = c(study, modality, treatment, arm.name, scale, participant_id),
+    names_from = week,
+    values_from = y
+  ) %>% {
+    # identify week columns
+    week_cols <- setdiff(names(.), c("study", "modality", "treatment", "arm.name", "scale", "participant_id"))
+    
+    # sort them numerically
+    week_cols_sorted <- sort(as.numeric(week_cols))
+    
+    # reselect in correct order
+    dplyr::select(., study, modality, treatment, arm.name, scale, participant_id,
+                  all_of(as.character(week_cols_sorted)))
+  }
+```
+
+```{r}
+#check correlation matrix
+wide_dat2 %>%
+  dplyr::select(-study, -modality, -treatment, -arm.name, -scale, -participant_id) %>%
+  cor(use = "pairwise.complete.obs")
+```
+
+Thats better, correlation between baseline and week 4 timepoints is \~0.496
+
+```{r}
+writexl::write_xlsx(sim_data2,"data/processed/2026-04-22-eknma-simdata.xlsx")
 ```
