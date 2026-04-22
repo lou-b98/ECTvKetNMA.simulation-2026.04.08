@@ -1,0 +1,29 @@
+---
+title: "eknma - Simulated Data Analysis"
+format: html
+editor: visual
+---
+
+## Analysis
+
+Using data simulated from aggregate values to conduct analysis
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readxl)
+```
+
+```{r}
+simdat <- read_excel("data/processed/2026-04-22-eknma-simdata.xlsx")
+glimpse(simdat)
+```
+
+Set vars as factors
+
+```{r}
+simdat <- simdat %>%
+  mutate(across(c(study, modality, treatment), as.factor))
+str(simdat)
+```
