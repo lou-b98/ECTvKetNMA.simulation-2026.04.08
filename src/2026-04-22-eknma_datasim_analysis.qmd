@@ -8,7 +8,10 @@ editor: visual
 
 Using data simulated from aggregate values to conduct analysis
 
+
+
 ```{r}
+getwd()
 library(dplyr)
 library(tidyr)
 library(purrr)
@@ -27,7 +30,9 @@ simdat <- simdat %>%
   mutate(across(c(study, modality, treatment), as.factor))
 str(simdat)
 ```
-I want to simplify the treatment variable (e.g. remove dose details)
+
+I want to simplify the "treatment" variable (e.g. remove dose details)
+
 ```{r}
 library(stringr)
 
@@ -77,21 +82,86 @@ ggplot(data = arm_summary, aes(x = week, y = mean)) +
                 size = 1,
                 width = 0.1)
 ```
+
+Testing breaking the data into ECT and ketamine subsets
+
+```{r}
+summary.ect <- arm_summary |>
+  filter(modality == "ECT")
+summary.ket <- arm_summary |>
+  filter(modality %in% c("esketamine", "ketamine"))
+```
+
 ```{r}
 ggplot(arm_summary, 
        aes(x = week,
            y = mean,
            group = interaction(study, treatment))) +
   geom_point(size = 3) +
-  geom_line() +
+  geom_line(aes(colour = treatment)) +
   labs(x = "Timepoint", y = "Mean outcome") +
   theme_minimal()
 ```
+
+# NMA
+
 ```{r}
 library(esc)
 library(gemtc)
 library(multinma)
 library(stringr)
 library(rjags)
+library(brms)
 ```
 
+```{r}
+plot_network_with_multinma <- function(df, title){
+  
+  # create a multinma network object
+  network = set_agd_contrast(df,
+                             study = study,
+                             trt = treatment,
+                             y = diff,
+                             se = std.err,
+                             sample_size = n)
+  
+  # plot network; for style options see:
+  # https://dmphillippo.github.io/multinma/reference/plot.nma_data.html
+  plot(network, weight_edges=TRUE, weight_nodes=TRUE) +
+    ggplot2::theme(legend.position = "bottom",
+                   legend.box = "vertical",
+                   legend.margin = ggplot2::margin(0,0,0,0),
+                   legend.spacing = ggplot2::unit(0.5, "lines")) +
+    ggplot2::ggtitle(title)
+}
+```
+
+```{r}
+simdat <- simdat %>%
+  mutate(week_c = week - min(week, na.rm = TRUE)) #centering week
+```
+
+## fit model
+
+```{r}
+model_raw <- brm(
+  y ~ treatment + s(week_c, by = treatment, k = 5) +
+    (1 | study) +
+    (1 | study:participant_id),
+  data = simdat,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  seed = 123
+)
+```
+
+```{r}
+priors <- c(
+  prior(normal(0, 5), class = "b"),          # fixed effects
+  prior(normal(0, 5), class = "Intercept"),
+  prior(exponential(1), class = "sd"),       # random effects
+  prior(exponential(1), class = "sigma")     # residual SD
+)
+```
