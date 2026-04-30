@@ -244,7 +244,7 @@ ggraph(g_modal, layout = "auto") +
 edges_placebo <- arm_summary %>%
   mutate(
     trt_clean = case_when(
-      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "placebo",
       TRUE ~ treatment
     )
   ) %>%
@@ -269,7 +269,7 @@ edges_placebo <- arm_summary %>%
 nodes_placebo <- arm_summary %>%
   mutate(
     trt_clean = case_when(
-      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "placebo",
       TRUE ~ treatment
     )
   ) %>%
@@ -337,7 +337,7 @@ pw_trt <- arm_sum_collapsed %>%
 pw_trt_collapsed <- simdat %>%
   mutate(
     trt_clean = case_when(
-      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "placebo",
       TRUE ~ treatment
     )
   ) %>%
@@ -386,7 +386,7 @@ net_w4_trtcollapsed <- netmeta(
   treat2 = treat2,
   studlab = studlab,
   data = pw_trt_collapsed %>% filter(week == 4),
-  sm = "MD", random = TRUE, reference.group = "Placebo"
+  sm = "MD", random = TRUE, reference.group = "placebo"
 )
 netgraph(net_w4_trtcollapsed)
 forest(net_w4_trtcollapsed)
@@ -400,7 +400,7 @@ net_w4_modality <- netmeta(
   treat2 = treat2,
   studlab = studlab,
   data = pw_modality %>% filter(week == 4),
-  sm = "MD", random = TRUE, reference.group = "Placebo"
+  sm = "MD", random = TRUE, reference.group = "placebo"
 )
 netgraph(net_w4_modality)
 forest(net_w4_modality)
@@ -409,7 +409,7 @@ Obviously this is not a very strong analysis because of the poor network and the
 
 ### Extrapolate NMA longitudinally
 
-By treatment - Placebo collapsed
+#### By treatment with placebo collapsed
 ```{r}
 nma_by_week_trtcollapsed <- pw_trt_collapsed %>%
   split(.$week) %>%
@@ -422,7 +422,7 @@ nma_by_week_trtcollapsed <- pw_trt_collapsed %>%
       studlab = d$studlab,
       sm = "MD",
       random = TRUE,
-      reference.group = "Placebo"
+      reference.group = "placebo"
     )
   })
 ```
@@ -431,14 +431,14 @@ nma_by_week_trtcollapsed <- pw_trt_collapsed %>%
 
 #set treatments except placebo
 all_trts <- unique(unlist(map(nma_by_week_trtcollapsed, ~ .x$trts)))
-all_trts <- setdiff(all_trts, "Placebo")
+all_trts <- setdiff(all_trts, "placebo")
 
 #extract effects over time
 results_trtcollapsed <- map_df(all_trts, function(trt) {
   map_df(names(nma_by_week_trtcollapsed), function(w) {
     net <- nma_by_week_trtcollapsed[[w]]
     trts <- net$trts
-    if (!all(c(trt, "Placebo") %in% trts)) {
+    if (!all(c(trt, "placebo") %in% trts)) {
       return(data.frame(
         week = as.numeric(w),
         treatment = trt,
@@ -450,8 +450,8 @@ results_trtcollapsed <- map_df(all_trts, function(trt) {
     data.frame(
       week = as.numeric(w),
       treatment = trt,
-      effect = net$TE.random[trt, "Placebo"],
-      se = net$seTE.random[trt, "Placebo"]
+      effect = net$TE.random[trt, "placebo"],
+      se = net$seTE.random[trt, "placebo"]
     )
   })
 })
@@ -463,19 +463,18 @@ ggplot(results_trtcollapsed,aes(x = week, y = effect, colour = treatment)) +
   geom_line() +
   geom_point() +
   labs(
-    y = "Mean difference vs Placebo",
+    y = "Mean difference vs placebo",
     x = "Week"
   ) +
   theme_minimal()
 ```
-Note better to make a reusable function
+### Making a function
 ```{r}
-#run_nma_by_week <- function(data,
+run_nma_by_week <- function(data,
                             treatments = NULL,
-                            comparator = "Placebo",
+                            comparator = "placebo",
                             sm = "MD",
                             random = TRUE) {
-
   # Step 1: run NMA by week
   nma_list <- data %>%
     split(.$week) %>%
@@ -523,237 +522,32 @@ Note better to make a reusable function
 
   return(results)
 }
-#test with existing
-results_trtcollapsed2 <- run_nma_by_week(data = pw_trt_collapsed, comparator = "Placebo")
 
-#version 2 of function
-run_nma_by_week <- function(data,
-                            treatments = NULL,
-                            comparator = "Placebo",
-                            sm = "MD",
-                            random = TRUE) {
 
-  #-----------------------------
-  # Helper: safe extraction
-  #-----------------------------
-  get_effect <- function(net, trt, comparator) {
-
-    TE <- net$TE.random
-    se <- net$seTE.random
-
-    # Check matrix exists
-    if (is.null(TE) || is.null(se)) return(c(NA, NA))
-
-    rn <- rownames(TE)
-    cn <- colnames(TE)
-
-    # Case 1: trt vs comparator
-    if (trt %in% rn && comparator %in% cn) {
-      val <- TE[trt, comparator]
-      se_val <- se[trt, comparator]
-
-      if (!is.na(val)) return(c(val, se_val))
-    }
-
-    # Case 2: comparator vs trt → flip sign
-    if (comparator %in% rn && trt %in% cn) {
-      val <- TE[comparator, trt]
-      se_val <- se[comparator, trt]
-
-      if (!is.na(val)) return(c(-val, se_val))
-    }
-
-    return(c(NA, NA))
-  }
-
-  #-----------------------------
-  # Step 1: run NMA by week
-  #-----------------------------
-  nma_list <- data %>%
-    split(.$week) %>%
-    map(~ netmeta(
-      TE = .x$TE,
-      seTE = .x$seTE,
-      treat1 = .x$treat1,
-      treat2 = .x$treat2,
-      studlab = .x$studlab,
-      sm = sm,
-      random = random,
-      reference.group = comparator
-    ))
-
-  #-----------------------------
-  # Step 2: detect treatments
-  #-----------------------------
-  if (is.null(treatments)) {
-    treatments <- unique(unlist(map(nma_list, ~ .x$trts)))
-    treatments <- setdiff(treatments, comparator)
-  }
-
-  #-----------------------------
-  # Step 3: extract results
-  #-----------------------------
-  results <- map_df(treatments, function(trt) {
-
-    map_df(names(nma_list), function(w) {
-
-      net <- nma_list[[w]]
-      trts <- net$trts
-
-      # Skip if treatment not in this week
-      if (!(trt %in% trts) || !(comparator %in% trts)) {
-        return(data.frame(
-          week = as.numeric(w),
-          treatment = trt,
-          effect = NA,
-          se = NA
-        ))
-      }
-
-      res <- get_effect(net, trt, comparator)
-
-      data.frame(
-        week = as.numeric(w),
-        treatment = trt,
-        effect = res[1],
-        se = res[2]
-      )
-    })
-  })
-
-  return(results)
-}
 ```
 
-Now test function with modality
+### by modality
 ```{r}
-results_modality <-run_nma_by_week(data = pw_modality)
+results_modality <- run_nma_by_week(data = pw_modality, comparator = "placebo")
+results_modality
 ggplot(results_modality,aes(x = week, y = effect, colour = treatment)) +
   geom_line() +
   geom_point() +
   labs(
-    y = "Mean difference vs Placebo",
+    y = "Mean difference vs placebo",
     x = "Week"
   ) +
   theme_minimal()
 ```
-testing not function approach
-
-```{r}
-#set treatments except placebo
-all_trts <- unique(unlist(map(nma_by_week_trtcollapsed, ~ .x$trts)))
-all_trts <- setdiff(all_trts, "Placebo")
-
-#extract effects over time
-results_trtcollapsed <- map_df(all_trts, function(trt) {
-  map_df(names(nma_by_week_trtcollapsed), function(w) {
-    net <- nma_by_week_trtcollapsed[[w]]
-    trts <- net$trts
-    if (!all(c(trt, "Placebo") %in% trts)) {
-      return(data.frame(
-        week = as.numeric(w),
-        treatment = trt,
-        effect = NA,
-        se = NA
-      ))
-    }
-
-    data.frame(
-      week = as.numeric(w),
-      treatment = trt,
-      effect = net$TE.random[trt, "Placebo"],
-      se = net$seTE.random[trt, "Placebo"]
-    )
-  })
-})
-
-```
 
 
 
-Now what about with ECT combined?
-```{r}
-results_modality <- map_df(all_trts, function(trt) {
-  map_df(names(nma_by_week_trtcollapsed), function(w) {
-    net <- nma_by_week_trtcollapsed[[w]]
-    trts <- net$trts
-    if (!all(c(trt, "Placebo") %in% trts)) {
-      return(data.frame(
-        week = as.numeric(w),
-        treatment = trt,
-        effect = NA,
-        se = NA
-      ))
-    }
-
-    data.frame(
-      week = as.numeric(w),
-      treatment = trt,
-      effect = net$TE.random[trt, "Placebo"],
-      se = net$seTE.random[trt, "Placebo"]
-    )
-  })
-})
-```
 
 
-```{r}
-library(esc)
-library(gemtc)
-library(multinma)
-library(stringr)
-library(rjags)
-library(brms)
-```
 
-```{r}
-plot_network_with_multinma <- function(df, title){
-  
-  # create a multinma network object
-  network = set_agd_contrast(df,
-                             study = study,
-                             trt = treatment,
-                             y = diff,
-                             se = std.err,
-                             sample_size = n)
-  
-  # plot network; for style options see:
-  # https://dmphillippo.github.io/multinma/reference/plot.nma_data.html
-  plot(network, weight_edges=TRUE, weight_nodes=TRUE) +
-    ggplot2::theme(legend.position = "bottom",
-                   legend.box = "vertical",
-                   legend.margin = ggplot2::margin(0,0,0,0),
-                   legend.spacing = ggplot2::unit(0.5, "lines")) +
-    ggplot2::ggtitle(title)
-}
-```
 
-```{r}
-simdat <- simdat %>%
-  mutate(week_c = week - min(week, na.rm = TRUE)) #centering week
-```
 
-## fit model
 
-```{r}
-model_raw <- brm(
-  y ~ treatment + s(week_c, by = treatment, k = 5) +
-    (1 | study) +
-    (1 | study:participant_id),
-  data = simdat,
-  family = gaussian(),
-  chains = 4,
-  cores = 4,
-  iter = 4000,
-  seed = 123
-)
-```
 
-```{r}
-priors <- c(
-  prior(normal(0, 5), class = "b"),          # fixed effects
-  prior(normal(0, 5), class = "Intercept"),
-  prior(exponential(1), class = "sd"),       # random effects
-  prior(exponential(1), class = "sigma")     # residual SD
-)
-```
+
+
