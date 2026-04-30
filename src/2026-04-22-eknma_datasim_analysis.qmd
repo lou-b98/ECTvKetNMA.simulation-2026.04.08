@@ -535,12 +535,23 @@ ggplot(results_modality,aes(x = week, y = effect, colour = treatment)) +
   geom_point() +
   labs(
     y = "Mean difference vs placebo",
-    x = "Week"
+    x = "Week",
+    color = "Treatment"
   ) +
   theme_minimal()
 ```
 
 
+Notable difference at baseline
+
+```{r}
+simdat.wbl <- simdat %>%
+  group_by(participant_id) %>%
+  mutate(
+    baseline = y[week == 0][1]
+  ) %>%
+  ungroup()
+```
 
 
 
