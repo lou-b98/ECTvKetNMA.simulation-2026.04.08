@@ -8,18 +8,16 @@ editor: visual
 
 Using data simulated from aggregate values to conduct analysis
 
-
-
 ```{r}
-getwd()
 library(dplyr)
 library(tidyr)
 library(purrr)
 library(readxl)
+library(here)
 ```
 
 ```{r}
-simdat <- read_excel("data/processed/2026-04-22-eknma-simdata.xlsx")
+simdat <- read_excel(here("data","processed","2026-04-22-eknma-simdata.xlsx"))
 glimpse(simdat)
 ```
 
@@ -53,7 +51,8 @@ levels(simdat$treatment)
 ```
 
 ```{r}
-arm_summary <- simdat %>%
+#note. different variations of same treatment (e.g. esket 56mg vs 84mg) are treated as separate arms
+arm_summary_detail <- simdat %>%
   group_by(study, modality, treatment, arm.name, timepoint, week) %>%   
   summarise(
     n = n(),
@@ -61,9 +60,55 @@ arm_summary <- simdat %>%
     sd = sd(y, na.rm = TRUE),
     .groups = "drop"
   )
+
+#version now where they are collapsed
+arm_sum_collapsed <- simdat %>%
+  group_by(study, week, modality, trt = treatment, arm.name) %>%
+  summarise(
+    mean = mean(y, na.rm = TRUE),
+    sd   = sd(y, na.rm = TRUE),
+    n    = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  distinct(study, week, trt, .keep_all = TRUE)
 ```
 
-# Plot
+# Summary of data availability
+## By timepoint
+```{r}
+simdat %>%
+  group_by(week, treatment) %>%
+  summarise(
+    n_studies = n_distinct(study),
+    n_participants = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(week, treatment)
+```
+```{r}
+simdat %>%
+  group_by(study, week, treatment, modality) %>%
+  summarise(
+    n_arms = n_distinct(arm.name),
+    n_modality = n_distinct(modality),
+    n_treatments = n_distinct(treatment),
+    n_participants = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(study, week)
+```
+```{r}
+simdat %>%
+  group_by(study, week, modality,treatment) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(
+    names_from = week,
+    values_from = n
+  ) %>%
+  select(study, modality,"0","1","2","3","4")
+```
+
+# Plotting
 
 ```{r}
 library(ggplot2)
@@ -103,7 +148,554 @@ ggplot(arm_summary,
   theme_minimal()
 ```
 
+I am confused because different studies have different comparisons...not sure what to do
+Move on:
+
+#arm level network plots
+Making network plots this way means i don't need to make contrasts/pairwise comparisons
+```{r}
+library(dplyr)
+library(purrr)
+```
+
+## By treatment
+```{r}
+edges_trt <- arm_summary %>%
+  filter(week == 4) %>%
+  group_by(study) %>%
+  group_split() %>%
+  map_dfr(function(d) {
+
+    trts <- unique(d$treatment)
+
+    # drop studies with only one treatment
+    if (length(trts) < 2) return(NULL)
+
+    comb <- t(combn(trts, 2))
+
+    data.frame(
+      from = comb[,1],
+      to   = comb[,2]
+    )
+  }) %>%
+  count(from, to, name = "weight") #add edge weights
+
+nodes_trt <- arm_summary %>%
+  filter(week == 4) %>%
+  group_by(treatment) %>%
+  summarise(size = sum(n), .groups = "drop") %>%
+  rename(name = treatment)
+```
+
+```{r}
+library(igraph)
+library(ggraph)
+```
+```{r}
+g_trt <-graph_from_data_frame(edges_trt, vertices = nodes_trt)
+ggraph(g_trt, layout = "auto") +
+  geom_edge_link(aes(width = weight), colour = "grey60") +
+  geom_node_point(aes(size = size), colour = "steelblue") +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  scale_edge_width(range = c(0.5, 2)) +
+  scale_size_continuous(range = c(3, 10)) +
+  theme_void()
+```
+## By modality
+```{r}
+edges_modal <- arm_summary %>%
+  filter(week == 4) %>%
+  group_by(study) %>%
+  group_split() %>%
+  map_dfr(function(d) {
+
+    trts <- unique(d$modality)
+
+    # drop studies with only one treatment
+    if (length(trts) < 2) return(NULL)
+
+    comb <- t(combn(trts, 2))
+
+    data.frame(
+      from = comb[,1],
+      to   = comb[,2]
+    )
+  }) %>%
+  count(from, to, name = "weight") #add edge weights
+
+nodes_modal <- arm_summary %>%
+  filter(week == 4) %>%
+  group_by(modality) %>%
+  summarise(size = sum(n), .groups = "drop") %>%
+  rename(name = modality)
+
+g_modal <- graph_from_data_frame(edges_modal, vertices = nodes_modal)
+ggraph(g_modal, layout = "auto") +
+  geom_edge_link(aes(width = weight), colour = "grey60") +
+  geom_node_point(aes(size = size), colour = "steelblue") +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  scale_edge_width(range = c(0.5, 2)) +
+  scale_size_continuous(range = c(3, 10)) +
+  theme_void()
+```
+
+## by treatment but with placebo combined
+```{r}
+edges_placebo <- arm_summary %>%
+  mutate(
+    trt_clean = case_when(
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      TRUE ~ treatment
+    )
+  ) %>%
+  filter(week == 4) %>%
+  group_by(study) %>%
+  group_split() %>%
+  map_dfr(function(d) {
+
+    trts <- unique(d$trt_clean)
+
+    # drop studies with only one treatment
+    if (length(trts) < 2) return(NULL)
+
+    comb <- t(combn(trts, 2))
+
+    data.frame(
+      from = comb[,1],
+      to   = comb[,2]
+    )
+  }) %>%
+  count(from, to, name = "weight")
+nodes_placebo <- arm_summary %>%
+  mutate(
+    trt_clean = case_when(
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      TRUE ~ treatment
+    )
+  ) %>%
+  filter(week == 4) %>%
+  group_by(trt_clean) %>%
+  summarise(size = sum(n), .groups = "drop") %>%
+  rename(name = trt_clean)
+
+g_placebo <- graph_from_data_frame(edges_placebo, vertices = nodes_placebo)
+
+ggraph(g_placebo, layout = "fr") +
+  geom_edge_link(aes(width = weight), colour = "grey60") +
+  geom_node_point(aes(size = size), colour = "steelblue") +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  scale_edge_width(range = c(0.5, 2)) +
+  scale_size_continuous(range = c(3, 10)) +
+  theme_void()
+```
+
+# Pairwise comparisons
+## by modality  e.g. ketamine, esketamine, placebo, ECT -> note, this excludes Loo2015 PW study
+```{r}
+library(netmeta)
+#pairwise by MODALITY e.g. ketamine, esketamine, placebo, ECT -> note, this excludes Loo2015 PW study
+pw_modality <- arm_sum_collapsed  %>%
+  group_split(week) %>%
+  lapply(function(d) {
+
+    # remove studies with only one treatment (e.g. ECT vs ECT after collapsing)
+    d <- d %>%
+      group_by(study) %>%
+      filter(n_distinct(modality) > 1) %>%
+      ungroup()
+
+    # skip if nothing left
+    if (nrow(d) == 0) return(NULL)
+
+    pw <- pairwise(
+      treat = d$modality,
+      mean  = d$mean,
+      sd    = d$sd,
+      n     = d$n,
+      studlab = d$study,
+      sm = "MD"
+    )
+
+    pw$week <- unique(d$week)
+    pw
+  }) %>%
+  bind_rows()
+```
+
+## By treatment
+```{r}
+pw_trt <- arm_sum_collapsed %>% 
+  group_split(week) %>% 
+  lapply(function(d) { 
+    pairwise( treat = d$trt, mean = d$mean, sd = d$sd, n = d$n, studlab = d$study, sm = "MD" ) %>% 
+      mutate(week = unique(d$week)) }) %>% 
+  bind_rows()
+```
+
+## combining placebo methods
+```{r}
+pw_trt_collapsed <- simdat %>%
+  mutate(
+    trt_clean = case_when(
+      str_detect(str_to_lower(treatment), "saline|midazolam") ~ "Placebo",
+      TRUE ~ treatment
+    )
+  ) %>%
+  group_by(study, week, trt_clean) %>%
+  summarise(
+    n = n(),
+    mean = mean(y, na.rm = TRUE),
+    sd = sd(y, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_split(week) %>%
+  map_dfr(function(d) {
+
+    # drop studies that collapse to single treatment
+    d <- d %>%
+      group_by(study) %>%
+      filter(n_distinct(trt_clean) > 1) %>%
+      ungroup()
+
+    if (nrow(d) == 0) return(NULL)
+
+    pw <- pairwise(
+      treat = d$trt_clean,
+      mean  = d$mean,
+      sd    = d$sd,
+      n     = d$n,
+      studlab = d$study,
+      sm = "MD"
+    )
+
+    pw$week <- unique(d$week)
+    pw
+  })
+```
+
+
 # NMA
+Start with modelling NMAs at 4 week timepoint
+First treatment with placebo collapsed
+```{r}
+#by treatment, placebo collapsed
+net_w4_trtcollapsed <- netmeta(
+  TE = TE,
+  seTE = seTE,
+  treat1 = treat1,
+  treat2 = treat2,
+  studlab = studlab,
+  data = pw_trt_collapsed %>% filter(week == 4),
+  sm = "MD", random = TRUE, reference.group = "Placebo"
+)
+netgraph(net_w4_trtcollapsed)
+forest(net_w4_trtcollapsed)
+```
+Second: modality -> note Loo2015 excluded from analysisis. Only ECT data is ekstrand and andand
+```{r}
+net_w4_modality <- netmeta(
+  TE = TE,
+  seTE = seTE,
+  treat1 = treat1,
+  treat2 = treat2,
+  studlab = studlab,
+  data = pw_modality %>% filter(week == 4),
+  sm = "MD", random = TRUE, reference.group = "Placebo"
+)
+netgraph(net_w4_modality)
+forest(net_w4_modality)
+```
+Obviously this is not a very strong analysis because of the poor network and the fact that all ECT vs placebo evidence is indirect
+
+### Extrapolate NMA longitudinally
+
+By treatment - Placebo collapsed
+```{r}
+nma_by_week_trtcollapsed <- pw_trt_collapsed %>%
+  split(.$week) %>%
+  map(function(d) {
+    netmeta(
+      TE = d$TE,
+      seTE = d$seTE,
+      treat1 = d$treat1,
+      treat2 = d$treat2,
+      studlab = d$studlab,
+      sm = "MD",
+      random = TRUE,
+      reference.group = "Placebo"
+    )
+  })
+```
+
+```{r}
+
+#set treatments except placebo
+all_trts <- unique(unlist(map(nma_by_week_trtcollapsed, ~ .x$trts)))
+all_trts <- setdiff(all_trts, "Placebo")
+
+#extract effects over time
+results_trtcollapsed <- map_df(all_trts, function(trt) {
+  map_df(names(nma_by_week_trtcollapsed), function(w) {
+    net <- nma_by_week_trtcollapsed[[w]]
+    trts <- net$trts
+    if (!all(c(trt, "Placebo") %in% trts)) {
+      return(data.frame(
+        week = as.numeric(w),
+        treatment = trt,
+        effect = NA,
+        se = NA
+      ))
+    }
+
+    data.frame(
+      week = as.numeric(w),
+      treatment = trt,
+      effect = net$TE.random[trt, "Placebo"],
+      se = net$seTE.random[trt, "Placebo"]
+    )
+  })
+})
+
+```
+
+```{r}
+ggplot(results_trtcollapsed,aes(x = week, y = effect, colour = treatment)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    y = "Mean difference vs Placebo",
+    x = "Week"
+  ) +
+  theme_minimal()
+```
+Note better to make a reusable function
+```{r}
+#run_nma_by_week <- function(data,
+                            treatments = NULL,
+                            comparator = "Placebo",
+                            sm = "MD",
+                            random = TRUE) {
+
+  # Step 1: run NMA by week
+  nma_list <- data %>%
+    split(.$week) %>%
+    map(~ netmeta(
+      TE = .x$TE,
+      seTE = .x$seTE,
+      treat1 = .x$treat1,
+      treat2 = .x$treat2,
+      studlab = .x$studlab,
+      sm = sm,
+      random = random,
+      reference.group = comparator
+    ))
+
+  # Step 2: auto-detect treatments if not provided
+  if (is.null(treatments)) {
+    treatments <- unique(unlist(map(nma_list, ~ .x$trts)))
+    treatments <- setdiff(treatments, comparator)
+  }
+
+  # Step 3: extract results
+  results <- map_df(treatments, function(trt) {
+    map_df(names(nma_list), function(w) {
+
+      net <- nma_list[[w]]
+      trts <- net$trts
+
+      if (!all(c(trt, comparator) %in% trts)) {
+        return(data.frame(
+          week = as.numeric(w),
+          treatment = trt,
+          effect = NA,
+          se = NA
+        ))
+      }
+
+      data.frame(
+        week = as.numeric(w),
+        treatment = trt,
+        effect = net$TE.random[trt, comparator],
+        se = net$seTE.random[trt, comparator]
+      )
+    })
+  })
+
+  return(results)
+}
+#test with existing
+results_trtcollapsed2 <- run_nma_by_week(data = pw_trt_collapsed, comparator = "Placebo")
+
+#version 2 of function
+run_nma_by_week <- function(data,
+                            treatments = NULL,
+                            comparator = "Placebo",
+                            sm = "MD",
+                            random = TRUE) {
+
+  #-----------------------------
+  # Helper: safe extraction
+  #-----------------------------
+  get_effect <- function(net, trt, comparator) {
+
+    TE <- net$TE.random
+    se <- net$seTE.random
+
+    # Check matrix exists
+    if (is.null(TE) || is.null(se)) return(c(NA, NA))
+
+    rn <- rownames(TE)
+    cn <- colnames(TE)
+
+    # Case 1: trt vs comparator
+    if (trt %in% rn && comparator %in% cn) {
+      val <- TE[trt, comparator]
+      se_val <- se[trt, comparator]
+
+      if (!is.na(val)) return(c(val, se_val))
+    }
+
+    # Case 2: comparator vs trt → flip sign
+    if (comparator %in% rn && trt %in% cn) {
+      val <- TE[comparator, trt]
+      se_val <- se[comparator, trt]
+
+      if (!is.na(val)) return(c(-val, se_val))
+    }
+
+    return(c(NA, NA))
+  }
+
+  #-----------------------------
+  # Step 1: run NMA by week
+  #-----------------------------
+  nma_list <- data %>%
+    split(.$week) %>%
+    map(~ netmeta(
+      TE = .x$TE,
+      seTE = .x$seTE,
+      treat1 = .x$treat1,
+      treat2 = .x$treat2,
+      studlab = .x$studlab,
+      sm = sm,
+      random = random,
+      reference.group = comparator
+    ))
+
+  #-----------------------------
+  # Step 2: detect treatments
+  #-----------------------------
+  if (is.null(treatments)) {
+    treatments <- unique(unlist(map(nma_list, ~ .x$trts)))
+    treatments <- setdiff(treatments, comparator)
+  }
+
+  #-----------------------------
+  # Step 3: extract results
+  #-----------------------------
+  results <- map_df(treatments, function(trt) {
+
+    map_df(names(nma_list), function(w) {
+
+      net <- nma_list[[w]]
+      trts <- net$trts
+
+      # Skip if treatment not in this week
+      if (!(trt %in% trts) || !(comparator %in% trts)) {
+        return(data.frame(
+          week = as.numeric(w),
+          treatment = trt,
+          effect = NA,
+          se = NA
+        ))
+      }
+
+      res <- get_effect(net, trt, comparator)
+
+      data.frame(
+        week = as.numeric(w),
+        treatment = trt,
+        effect = res[1],
+        se = res[2]
+      )
+    })
+  })
+
+  return(results)
+}
+```
+
+Now test function with modality
+```{r}
+results_modality <-run_nma_by_week(data = pw_modality)
+ggplot(results_modality,aes(x = week, y = effect, colour = treatment)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    y = "Mean difference vs Placebo",
+    x = "Week"
+  ) +
+  theme_minimal()
+```
+testing not function approach
+
+```{r}
+#set treatments except placebo
+all_trts <- unique(unlist(map(nma_by_week_trtcollapsed, ~ .x$trts)))
+all_trts <- setdiff(all_trts, "Placebo")
+
+#extract effects over time
+results_trtcollapsed <- map_df(all_trts, function(trt) {
+  map_df(names(nma_by_week_trtcollapsed), function(w) {
+    net <- nma_by_week_trtcollapsed[[w]]
+    trts <- net$trts
+    if (!all(c(trt, "Placebo") %in% trts)) {
+      return(data.frame(
+        week = as.numeric(w),
+        treatment = trt,
+        effect = NA,
+        se = NA
+      ))
+    }
+
+    data.frame(
+      week = as.numeric(w),
+      treatment = trt,
+      effect = net$TE.random[trt, "Placebo"],
+      se = net$seTE.random[trt, "Placebo"]
+    )
+  })
+})
+
+```
+
+
+
+Now what about with ECT combined?
+```{r}
+results_modality <- map_df(all_trts, function(trt) {
+  map_df(names(nma_by_week_trtcollapsed), function(w) {
+    net <- nma_by_week_trtcollapsed[[w]]
+    trts <- net$trts
+    if (!all(c(trt, "Placebo") %in% trts)) {
+      return(data.frame(
+        week = as.numeric(w),
+        treatment = trt,
+        effect = NA,
+        se = NA
+      ))
+    }
+
+    data.frame(
+      week = as.numeric(w),
+      treatment = trt,
+      effect = net$TE.random[trt, "Placebo"],
+      se = net$seTE.random[trt, "Placebo"]
+    )
+  })
+})
+```
+
 
 ```{r}
 library(esc)
